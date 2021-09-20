@@ -1,5 +1,6 @@
 from bson import json_util
 from faker import Faker
+from providers.image_url import SafeImageUrl
 import argparse
 import bson
 import os
@@ -7,6 +8,8 @@ import yaml
 import pymongo
 
 fake = Faker()
+fake.add_provider(SafeImageUrl)
+
 client = pymongo.MongoClient("localhost", 27017)
 
 def flatten(d, sep='_', parent_key=''):
@@ -41,7 +44,7 @@ def str_to_generator(fk, s):
     """
     if s == "delete":
         return False
-    if isinstance(s, list):
+    elif isinstance(s, list):
         raise Exception("Lists -- especially lists of maps -- are not yet supported!")
     else:
         return getattr(fk, s)
@@ -54,15 +57,21 @@ def remove_missing_keys(a, b):
             n[k] = a[k]
     return n
 
-def transform_values(db_name, collection_name, set_generator, unset_generator):
+def get_filters(filters, db_name, collection_name):
+    return (filters.get(db_name) and filters.get(db_name).get(collection_name) or {})
+
+def transform_values(*, db_name, collection_name, set_generator, unset_generator, filters={}):
     """Iterate through a collection (identified by db_name.collection_name, e.g. foo.bar),
     updating each record by calling the provided 'set' and 'unset' generators.
     This means a new, random 'set' (and 'unset' - although this doesn't really make sense)
     for each record.
     """
     coll = client[db_name][collection_name]
+    coll_filter = get_filters(filters, db_name, collection_name)
     docs_count = coll.count_documents({})
     print("-- Updating", docs_count, "documents...")
+    if coll_filter:
+        print("   (filtering ", coll_filter, ")")
     for result in coll.find({}):
         tries = 10
         while tries > 0:
@@ -129,17 +138,19 @@ def apply_cfg(cfg):
     """Applies a fog config to a local MongoDB instance.
 
     The structure of the config is as follows:
-    {'namespace':{'collection':{'field':'generator'}}}
+    {'transform':
+      {'namespace':{'collection':{'field':'generator'}}}}
 
     e.g.
-    {'my_db':{'users':{'email':'ascii_safe_email'}}}
+    {'transform':
+      {'my_db':{'users':{'email':'ascii_safe_email'}}}}
 
     In this case, all records in 'my_db.users' will have a random email,
-    generated from `faker.ascii_safe_email` applied to thw `email` field.
+    generated from `faker.ascii_safe_email` applied to the `email` field.
 
     """
     # dbs
-    for db_name, db in cfg.items():
+    for db_name, db in cfg.get('transform').items():
         print("db:", db_name )
         # collections
         for collection_name, collection  in db.items():
@@ -150,29 +161,42 @@ def apply_cfg(cfg):
                 generator_cfg   = prepare_generators(collection, dict())
                 set_generator   = create_set_generator(generator_cfg)
                 unset_generator = create_unset_generator(generator_cfg)
-                transform_values(db_name, collection_name, set_generator, unset_generator)
+                transform_values(db_name=db_name,
+                                 collection_name=collection_name,
+                                 set_generator=set_generator,
+                                 unset_generator=unset_generator,
+                                 filters=cfg.get('filters'))
     return
+
+def load_cfg(filename):
+    """Safely load a yaml file"""
+    with open(filename, 'r') as stream:
+        try:
+            cfg = yaml.safe_load(stream)
+            return cfg
+        except yaml.YAMLError as exc:
+            print(exc)
+            return
 
 def fog(fog_cfg_path):
     """Load a yaml file as a fog config and apply"""
-    with open(fog_cfg_path, 'r') as stream:
-        try:
-            cfg = yaml.safe_load(stream)
-            apply_cfg(cfg)
-        except yaml.YAMLError as exc:
-            print(exc)
+    cfg = load_cfg(fog_cfg_path)
+    apply_cfg(cfg)
     return
 
 if __name__ == '__main__':
     # pylint: disable=invalid-name
     parser = argparse.ArgumentParser()
     parser.add_argument('--list', help='list mongodb tables', action='store_true',)
+    parser.add_argument('--test', help='test', action='store_true',)
     parser.add_argument('--fog',  help='config file')
     args = parser.parse_args()
 
     if args.fog:
         print("Using fog config:", args.fog.strip())
         fog(args.fog)
+    elif args.test:
+        print(fake.safe_image_url())
     elif args.list:
         print(client.list_database_names())
     else:
