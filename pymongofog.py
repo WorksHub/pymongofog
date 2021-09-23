@@ -68,11 +68,11 @@ def transform_values(*, db_name, collection_name, set_generator, unset_generator
     """
     coll = client[db_name][collection_name]
     coll_filter = get_filters(filters, db_name, collection_name)
-    docs_count = coll.count_documents({})
+    docs_count = coll.count_documents(coll_filter)
     print("-- Updating", docs_count, "documents...")
     if coll_filter:
         print("   (filtering ", coll_filter, ")")
-    for result in coll.find({}):
+    for result in coll.find(coll_filter):
         tries = 10
         while tries > 0:
             # TODO values that don't exist on the record
